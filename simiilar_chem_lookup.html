@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Find Closest Chemicals by NBP and MWT</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --accent: #1f78d1;
+      --muted: #6b7280;
+      --danger: #d9534f;
+      --ok: #28a745;
+      font-family: Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    body{
+      margin:0;
+      padding:24px;
+      background: linear-gradient(180deg, var(--bg), #eef3fb 60%);
+      color: #0b1220;
+    }
+    .container{
+      max-width: 980px;
+      margin: 0 auto;
+    }
+    header{
+      margin-bottom: 18px;
+    }
+    h1{ margin:0 0 6px 0; font-size: 1.4rem;}
+    p.lead{ margin:0; color:var(--muted); font-size:0.95rem;}
+    .card{
+      background: var(--card);
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: 0 6px 18px rgba(17,24,39,0.06);
+      margin-top: 16px;
+    }
+    form{
+      display:flex;
+      gap:12px;
+      flex-wrap:wrap;
+      align-items:end;
+    }
+    label{
+      display:block;
+      font-size:0.85rem;
+      color:var(--muted);
+      margin-bottom:6px;
+    }
+    .field{
+      display:flex;
+      flex-direction:column;
+      min-width:180px;
+    }
+    input[type="number"]{
+      padding:8px 10px;
+      border-radius:8px;
+      border:1px solid #dfe7f3;
+      background:#fff;
+      width:220px;
+      font-size:0.95rem;
+    }
+    button{
+      background:var(--accent);
+      color:white;
+      border:none;
+      padding:10px 14px;
+      border-radius:8px;
+      font-weight:600;
+      cursor:pointer;
+    }
+    button:disabled{ opacity:0.6; cursor:not-allowed;}
+    .small{
+      font-size:0.85rem;
+      color:var(--muted);
+    }
+    #results{
+      margin-top:14px;
+    }
+    table{
+      width:100%;
+      border-collapse:collapse;
+      margin-top:8px;
+      font-size:0.95rem;
+    }
+    th, td{
+      text-align:left;
+      padding:10px 8px;
+      border-bottom:1px solid #eef2fb;
+    }
+    th{
+      background:#f7f9fe;
+      font-weight:600;
+      color:#253341;
+      font-size:0.9rem;
+    }
+    tr:hover td{ background:#fbfdff; }
+    .muted{
+      color:var(--muted); font-size:0.85rem;
+    }
+    .error{
+      color:var(--danger); font-weight:600;
+      margin-top:10px;
+    }
+    .note{
+      margin-top:10px;
+      font-size:0.9rem;
+      color:var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Find closest chemicals by NBP (K) and Molecular Weight</h1>
+      <p class="lead">Enter a normal boiling point (nbp, in K) and a molecular weight (g·mol⁻¹). The tool will find the 20 records in data/cheminfo_with_nbp.csv with nbp and mwt closest to your input.</p>
+    </header>
+
+    <div class="card">
+      <form id="queryForm">
+        <div class="field">
+          <label for="nbpInput">NBP (deg K)</label>
+          <input id="nbpInput" name="nbp" type="number" step="any" min="-273.15" required placeholder="e.g. 350" />
+        </div>
+
+        <div class="field">
+          <label for="mwtInput">Molecular weight (g·mol⁻¹)</label>
+          <input id="mwtInput" name="mwt" type="number" step="any" min="0" required placeholder="e.g. 180.16" />
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:6px;justify-content:flex-end;">
+          <button id="findBtn" type="submit">Find closest 20</button>
+          <div class="small muted">CSV path: <code>data/cheminfo_with_nbp.csv</code></div>
+        </div>
+      </form>
+
+      <div id="results"></div>
+      <div id="error" class="error" style="display:none;"></div>
+      <div class="note">Important: The CSV must be accessible via the server at the path above (same origin). If you're testing locally, run a simple local web server (e.g., python -m http.server) from the folder that contains the HTML and the data/ folder.</div>
+    </div>
+  </div>
+
+  <script>
+    // CSV parser that handles quoted fields (reasonable coverage)
+    function parseCSV(text){
+      // Split into lines, but preserve quoted newlines by a regex-based parser
+      const rows = [];
+      let cur = [];
+      let field = '';
+      let inQuotes = false;
+      for (let i = 0; i < text.length; i++){
+        const ch = text[i];
+        const next = text[i+1];
+        if (inQuotes) {
+          if (ch === '"' && next === '"') { field += '"'; i++; continue; } // escaped quote
+          if (ch === '"') { inQuotes = false; continue; }
+          field += ch;
+        } else {
+          if (ch === '"') { inQuotes = true; continue; }
+          if (ch === ',') { cur.push(field); field = ''; continue; }
+          if (ch === '\r') continue;
+          if (ch === '\n') { cur.push(field); rows.push(cur); cur = []; field = ''; continue; }
+          field += ch;
+        }
+      }
+      // Push final
+      if (inQuotes) {
+        // malformed but try to push what we have
+      }
+      if (field !== '' || cur.length > 0) cur.push(field);
+      if (cur.length > 0) rows.push(cur);
+      return rows;
+    }
+
+    // Get index of required columns from header row
+    function headerIndexMap(headerRow){
+      const map = {};
+      for (let i = 0; i < headerRow.length; i++){
+        map[ headerRow[i].trim() ] = i;
+      }
+      return map;
+    }
+
+    // Parse numeric safely
+    function toNum(v){
+      if (v === null || v === undefined) return NaN;
+      const s = (''+v).trim();
+      if (s === '') return NaN;
+      const n = Number(s);
+      return Number.isFinite(n) ? n : NaN;
+    }
+
+    document.getElementById('queryForm').addEventListener('submit', async function(e){
+      e.preventDefault();
+      document.getElementById('error').style.display = 'none';
+      const nbpInput = toNum(document.getElementById('nbpInput').value);
+      const mwtInput = toNum(document.getElementById('mwtInput').value);
+      if (!Number.isFinite(nbpInput) || !Number.isFinite(mwtInput)){
+        showError('Please enter valid numeric values for both NBP and molecular weight.');
+        return;
+      }
+
+      const btn = document.getElementById('findBtn');
+      btn.disabled = true;
+      btn.textContent = 'Loading CSV...';
+
+      try {
+        const resp = await fetch('data/cheminfo_with_nbp.csv');
+        if (!resp.ok) {
+          throw new Error(`Could not fetch CSV: ${resp.status} ${resp.statusText}`);
+        }
+        const text = await resp.text();
+        const rows = parseCSV(text);
+        if (!rows || rows.length < 2) throw new Error('CSV appears empty or malformed.');
+
+        const header = rows[0].map(h => h.trim());
+        const idx = headerIndexMap(header);
+
+        // Required columns: nbp_deg_k (nbp_deg_k or nbp_deg_k / nbp_deg_k?), nbp column name provided by user: "nbp_deg_k" per columns list (nbp_deg_k appears as last column 'nbp_deg_k' or maybe 'nbp_deg_k' spelled 'nbp_deg_k' - user mentioned 'nbp_deg_k' column name 'nbp_deg_k' or 'nbp_deg_k'. Fallback to "nbp_deg_k" or "nbp_deg_k" or "nbp_deg_k" variations.)
+        // From header the last column is 'nbp_deg_k' per prompt: ' nbp_deg_k' (we'll try common variants)
+        const nbpCandidates = ['nbp_deg_k','nbp_deg_k ','nbp_deg_k','nbp_deg_k','nbp_deg_k']; // redundant but harmless
+        // Actually look for column names from the provided header: try "nbp_deg_k" or "nbp_deg_k" or "nbp_deg_k" or "nbp_deg_k" -> simply search for any header that contains 'nbp' and 'deg' and 'k'
+        function findColumnByPattern(keys, patt){
+          for (const k of keys){
+            const kk = k.toLowerCase();
+            if (patt.every(x => kk.includes(x))) return k;
+          }
+          return null;
+        }
+        const nbpColName = findColumnByPattern(header, ['nbp','deg','k']) || findColumnByPattern(header, ['nbp']) || findColumnByPattern(header, ['nbp','k']);
+        const mwtColName = findColumnByPattern(header, ['mw']) || findColumnByPattern(header, ['molecular','weight']) || 'mw';
+        // For chemical name and cas
+        const nameColName = findColumnByPattern(header, ['chem_name','chem','name']) || findColumnByPattern(header, ['chem_name']) || findColumnByPattern(header, ['chem_name','pws_name']) || 'chem_name';
+        const casColName = findColumnByPattern(header, ['cas']) || findColumnByPattern(header, ['cas_no']) || 'cas_no';
+
+        if (!nbpColName || !(nbpColName in idx)){
+          // try exact 'nbp_deg_k' or last column by name
+          const last = header[header.length-1];
+          if (last && last.toLowerCase().includes('nbp')) {
+            idx['nbp_guess'] = header.length - 1;
+            console.warn('Using last column as nbp:', last);
+          } else {
+            throw new Error('NBP column not found in CSV header. Expected a column with "nbp" and "k" in the name (e.g. nbp_deg_k). Found header: ' + header.join(', '));
+          }
+        }
+        if (!(mwtColName in idx)) {
+          // try 'mw'
+          if ('mw' in idx) {
+            // ok
+          } else {
+            // try any header containing 'mw' or 'molecular'
+            let found = null;
+            for (const k of header) {
+              const kk = k.toLowerCase();
+              if (kk === 'mw' || kk.includes('mw') || (kk.includes('molecular') && kk.includes('weight'))) { found = k; break; }
+            }
+            if (found) mwtColName = found;
+            else throw new Error('Molecular weight column not found in CSV header. Expected "mw" or something like "molecular weight". Found header: ' + header.join(', '));
+          }
+        }
+
+        // Determine actual column indices
+        const nbpIndex = (nbpColName in idx) ? idx[nbpColName] : idx['nbp_guess'];
+        const mwtIndex = idx[mwtColName];
+        const nameIndex = (nameColName in idx) ? idx[nameColName] : (header.indexOf('chem_name') !== -1 ? header.indexOf('chem_name') : 0);
+        const casIndex = (casColName in idx) ? idx[casColName] : (header.indexOf('cas_no') !== -1 ? header.indexOf('cas_no') : -1);
+
+        // Collect records
+        const records = [];
+        for (let r = 1; r < rows.length; r++){
+          const row = rows[r];
+          // Some rows may be shorter; guard
+          const nbpVal = toNum(row[nbpIndex]);
+          const mwtVal = toNum(row[mwtIndex]);
+          const chemName = (row[nameIndex] !== undefined) ? row[nameIndex] : '';
+          const casNum = (casIndex >= 0 && row[casIndex] !== undefined) ? row[casIndex] : '';
+          // Only include if at least one of nbp or mwt is defined? We need both numeric to compute distance
+          if (Number.isFinite(nbpVal) && Number.isFinite(mwtVal)) {
+            records.push({nbp: nbpVal, mwt: mwtVal, name: chemName, cas: casNum, rowIndex: r});
+          }
+        }
+
+        if (records.length === 0) throw new Error('No usable records with numeric NBP and molecular weight were found.');
+
+        // compute min/max for normalization
+        let nbpMin = Infinity, nbpMax = -Infinity, mwtMin = Infinity, mwtMax = -Infinity;
+        records.forEach(rec => {
+          if (rec.nbp < nbpMin) nbpMin = rec.nbp;
+          if (rec.nbp > nbpMax) nbpMax = rec.nbp;
+          if (rec.mwt < mwtMin) mwtMin = rec.mwt;
+          if (rec.mwt > mwtMax) mwtMax = rec.mwt;
+        });
+        // Avoid zero-range
+        const nbpRange = (nbpMax - nbpMin) || Math.max(1, Math.abs(nbpMin));
+        const mwtRange = (mwtMax - mwtMin) || Math.max(1, Math.abs(mwtMin));
+
+        // Compute normalized distance
+        records.forEach(rec => {
+          const dN = (rec.nbp - nbpInput) / nbpRange;
+          const dM = (rec.mwt - mwtInput) / mwtRange;
+          rec.distance = Math.sqrt(dN*dN + dM*dM);
+          // also compute absolute differences for display
+          rec.dNBP = rec.nbp - nbpInput;
+          rec.dMWT = rec.mwt - mwtInput;
+        });
+
+        // sort by distance
+        records.sort((a,b) => a.distance - b.distance);
+
+        const top = records.slice(0,20);
+
+        showResults(top, nbpInput, mwtInput);
+
+      } catch (err) {
+        showError(err.message || String(err));
+        console.error(err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Find closest 20';
+      }
+    });
+
+    function showError(msg){
+      const el = document.getElementById('error');
+      el.style.display = 'block';
+      el.textContent = msg;
+      document.getElementById('results').innerHTML = '';
+    }
+
+    function showResults(rows, nbpInput, mwtInput){
+      const rdiv = document.getElementById('results');
+      if (!rows || rows.length === 0) {
+        rdiv.innerHTML = '<div class="muted">No matching records found.</div>';
+        return;
+      }
+      let html = '';
+      html += `<div class="small muted">Showing ${rows.length} closest matches to NBP = ${nbpInput} K and MWT = ${mwtInput} g·mol⁻¹ (sorted by combined normalized distance)</div>`;
+      html += '<table>';
+      html += '<thead><tr><th>#</th><th>Chemical name</th><th>CAS #</th><th style="text-align:right">NBP (K)</th><th style="text-align:right">MW (g·mol⁻¹)</th><th style="text-align:right">Distance</th></tr></thead><tbody>';
+      for (let i = 0; i < rows.length; i++){
+        const r = rows[i];
+        html += `<tr>
+          <td>${i+1}</td>
+          <td>${escapeHtml(r.name || '')}</td>
+          <td>${escapeHtml(r.cas || '')}</td>
+          <td style="text-align:right">${formatNumber(r.nbp)}</td>
+          <td style="text-align:right">${formatNumber(r.mwt)}</td>
+          <td style="text-align:right">${formatNumber(r.distance)}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      rdiv.innerHTML = html;
+    }
+
+    function formatNumber(n){
+      if (!Number.isFinite(n)) return '';
+      // show up to 4 significant digits but keep decimals for small numbers
+      if (Math.abs(n) >= 100) return Math.round(n).toString();
+      return (Math.round(n * 10000) / 10000).toString();
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+  </script>
+</body>
+</html>
